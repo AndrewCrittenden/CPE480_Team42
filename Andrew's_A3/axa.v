@@ -142,7 +142,7 @@ always @(posedge clk) begin
 		s0pc <= s0jmptarget;
 	end else if (!s0blocked && !s0waiting) begin
 		s0lastpc <= s0pc;
-		s0pc <= s0pc + 1;
+		 s0pc <= s0pc + (fwd ? 1 : -1); //Increment or Decrement based on fwd
 	end
 	#1 $display($time, ": 0: s0pc: %d, should jump: %b, lastpc: %d", s0pc, s0shouldjmp, s0lastpc);
 end
@@ -215,13 +215,15 @@ always @(posedge clk) begin
 		s2dstreg <= s1dst;
 		// Push onto undo stack if this is a push instruction
 		if (s1op `OP_PUSHES) begin
-			// Most instructions push the value of the dst register
-			// but land pushes the value of the pc before the most
-			// recent jump. To avoid interlocks on the undo stack,
-			// this value is pushed here, passed along by s1lastpc
-			u[s2usp] <= (s1op == `OPland) ? s1lastpc : r[s1dst];
-			s2usp <= s2usp + 1;
-			$display($time, ": 2: PUSHING TO UNDO STACK: ", (s1op == `OPland) ? s1lastpc : r[s1dst], ", ", s1op, ", ", s1lastpc, ", ", r[s1dst]);
+			if (fwd) begin
+				// Most instructions push the value of the dst register
+				// but land pushes the value of the pc before the most
+				// recent jump. To avoid interlocks on the undo stack,
+				// this value is pushed here, passed along by s1lastpc
+				u[s2usp] <= (s1op == `OPland) ? s1lastpc : r[s1dst];
+				s2usp <= s2usp + 1;
+				$display($time, ": 2: PUSHING TO UNDO STACK: ", (s1op == `OPland) ? s1lastpc : r[s1dst], ", ", s1op, ", ", s1lastpc, ", ", r[s1dst]);
+			//end else 'DREST TODO test if this works
 		end
 	end
 	#3 $display($time, ": 2:           op: %s, typ: %b, src: %x, dst: %x, dstreg: %d, usp: %d", opStr(s2op), s2typ, s2src, s2dst, s2dstreg, s2usp);
