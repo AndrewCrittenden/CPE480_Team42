@@ -6,7 +6,7 @@
 `define REGSIZE [15:0]
 `define MEMSIZE [65535:0]
 `define UPTR    [3:0]
-`define USIZE   [15:0]
+`define USIZE   [255:0]
 
 // instruction fields
 `define IOPLEN  [15]
@@ -78,6 +78,8 @@ initial begin
 end
 endmodule
 
+`define DREST begin s4alu <= u[s2usp]; s2usp <= s2usp - 1; end
+
 module processor (halt, reset, clk);
 output reg halt;
 input reset, clk;
@@ -113,6 +115,8 @@ reg `REG   s3dstreg;
 reg `OP    s4op;
 reg `WORD  s4alu;
 reg `REG   s4dstreg;
+
+reg fwd;
 
 // Stage 0: Update PC
 assign s0blocked = (opIsBranch(s1op) || opIsBranch(s2op));
@@ -249,24 +253,32 @@ always @(posedge clk) begin
 		s4op  <= `OPnop;
 		s4alu <= 0;
 		s4dstreg <= 0;
+		fwd <= 1;
 	end else begin
 		s4op <= s3op;
 		s4dstreg <= s3dstreg;
 		// This case should handle every instruction for which
 		// opWritesToDst is true
-		case (s3op)
+		case (s3op) //ALU supports reverse Execution Now
 			`OPxhi: begin s4alu <= {s3dst[15:8] ^ s3src[7:0], s3dst[7:0]}; end
 			`OPxlo: begin s4alu <= {s3dst[15:8], s3dst[7:0] ^ s3src[7:0]}; end
-			`OPlhi: begin s4alu <= {s3src[7:0], 8'b0}; end
-			`OPllo: begin s4alu <= s3src; end
-			`OPadd: begin s4alu <= s3dst + s3src; end
-			`OPsub: begin s4alu <= s3dst - s3src; end
+			`OPlhi: begin if(fwd) begin s4alu <= {s3src[7:0], 8'b0}; end else `DREST end
+			`OPllo: begin if(fwd) begin s4alu <= s3src; end else `DREST end
+			`OPadd: begin s4alu <= s3dst + (fwd ? s3src : -s3src); end
+			`OPsub: begin s4alu <= s3dst + (fwd ? -s3src : s3src); end
 			`OPxor: begin s4alu <= s3dst ^ s3src; end
-			`OProl: begin s4alu <= (s3dst << (s3src & 16'h000f)) | (s3dst >> ((16 - s3src) & 16'h000f)); end
-			`OPshr: begin s4alu <= {{16{s3dst[15]}}, s3dst} >> (s3src & 16'h000f); end
-			`OPor:  begin s4alu <= s3dst | s3src; end
-			`OPand: begin s4alu <= s3dst & s3src; end
-			`OPdup, `OPex: begin s4alu <= s3src; end
+			`OProl: begin if(fwd) begin 
+				s4alu <= (s3dst << (s3src & 16'h000f)) | (s3dst >> ((16 - s3src) & 16'h000f)); end //rotate left
+				else begin
+				s4alu <= (s3dst << ((16 - s3src) & 16'h000f)) | (s3dst >> (s3src & 16'h000f)); //rotate right
+				end
+			end
+			`OPshr: begin if(fwd) begin s4alu <= {{16{s3dst[15]}}, s3dst} >> (s3src & 16'h000f); end else `DREST end
+			`OPor:  begin if(fwd) begin s4alu <= s3dst | s3src; end else `DREST end
+			`OPand: begin if(fwd) begin s4alu <= s3dst & s3src; end else `DREST end
+			`OPex: begin s4alu <= s3src; end
+			`OPdup begin if(fwd) begin s4alu <= s3src; end else `DREST end
+
 		endcase
 	end
 	#5 $display($time, ": 4:           op: %s,          alu: %x,            dstreg: %d", opStr(s4op), s4alu, s4dstreg);
