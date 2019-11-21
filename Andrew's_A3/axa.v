@@ -121,7 +121,6 @@ reg s0fwd;
 reg s1fwd;
 reg s2fwd;
 reg s3fwd;
-reg s4fwd;
 
 // Stage 0: Update PC
 assign s0blocked = (opIsBranch(s1op) || opIsBranch(s2op));
@@ -132,7 +131,6 @@ assign s0shouldjmp =
 	|| (s2op == `OPbn && s2dst[15] == 1)
 	|| (s2op == `OPbnn && s2dst[15] == 0);
 assign s0jmptarget = (s2typ == `ILTypeImm) ? (s0pc + s2src - 1) : s2src;
-assign s0fwd = fwd;
 
 always @(posedge clk) begin
 	if (reset) begin
@@ -142,14 +140,17 @@ always @(posedge clk) begin
 		$readmemh1(im);
 		$readmemh2(dm);
 		fwd <= 1;
-	end else if (s0shouldjmp) begin
-		// save pc before jumping so land can push it to undo stack
-		// -1 because stage 0 blocks one instruction after the branch
-		s0lastpc <= s0pc - 1;
-		s0pc <= s0jmptarget;
-	end else if (!s0blocked && !s0waiting) begin
-		s0lastpc <= s0pc;
-		s0pc <= s0pc + (s0fwd ? 1 : -1); //Increment or Decrement based on s0fwd
+	end else begin 
+		s0fwd <= fwd;
+		if (s0shouldjmp) begin
+			// save pc before jumping so land can push it to undo stack
+			// -1 because stage 0 blocks one instruction after the branch
+			s0lastpc <= s0pc - 1;
+			s0pc <= s0jmptarget;
+		end else if (!s0blocked && !s0waiting) begin
+			s0lastpc <= s0pc;
+			 s0pc <= s0pc + (fwd ? 1 : -1); //Increment or Decrement based on fwd
+		end
 	end
 	#1 $display($time, ": 0: s0pc: %d, should jump: %b, lastpc: %d", s0pc, s0shouldjmp, s0lastpc);
 end
@@ -158,7 +159,6 @@ end
 assign s1blocked = (opIsBlocking(s1op) || opIsBlocking(s2op)
                  || opIsBlocking(s3op) || opIsBlocking(s4op));
 assign s1waiting = s2blocked || s2waiting;
-assign s1fwd = s0fwd;
 
 always @(posedge clk) begin
 	// s0blocked: Special case, s0 can't emit NOPs, so s1 needs to do that for it.
@@ -167,6 +167,7 @@ always @(posedge clk) begin
 		if (reset)
 			s1lastpc <= 0;
 	end else if (!s1waiting) begin
+		s1fwd <= s0fwd;
 		s1ir <= im[s0pc];
 		s1lastpc <= s0lastpc;
 	end
@@ -198,7 +199,6 @@ assign s2blocked =
 		|| (s1src == s4dstreg && opWritesToDst(s4op))));
 assign s2waiting = 0;
 assign s2undidx = s2usp - s1src - 1; // In own assign to clip value to `UPTR
-assign s2fwd = s1fwd;
 
 always @(posedge clk) begin
 	if (reset || (s2blocked && !s2waiting)) begin
@@ -210,6 +210,7 @@ always @(posedge clk) begin
 		if (reset)
 			s2usp <= 0;
 	end else if (!s2waiting) begin
+		s2fwd <= s1fwd;
 		s2op  <= s1op;
 		s2typ <= s1typ;
 		// Not all instructions have a valid src or dst to read, but
@@ -224,7 +225,7 @@ always @(posedge clk) begin
 		s2dstreg <= s1dst;
 		// Push onto undo stack if this is a push instruction
 		if (s1op `OP_PUSHES) begin
-			if (s2fwd) begin
+			if (s1fwd) begin
 				// Most instructions push the value of the dst register
 				// but land pushes the value of the pc before the most
 				// recent jump. To avoid interlocks on the undo stack,
@@ -232,7 +233,8 @@ always @(posedge clk) begin
 				u[s2usp] <= (s1op == `OPland) ? s1lastpc : r[s1dst];
 				s2usp <= s2usp + 1;
 				$display($time, ": 2: PUSHING TO UNDO STACK: ", (s1op == `OPland) ? s1lastpc : r[s1dst], ", ", s1op, ", ", s1lastpc, ", ", r[s1dst]);
-			//end else 'DREST TODO test if this works
+			end
+			//else 'DREST TODO test if this works
 		end
 	end
 	#3 $display($time, ": 2:           op: %s, typ: %b, src: %x, dst: %x, dstreg: %d, usp: %d", opStr(s2op), s2typ, s2src, s2dst, s2dstreg, s2usp);
@@ -240,13 +242,13 @@ end
 
 // Stage 3: Read / write memory
 always @(posedge clk) begin
-assign s3fwd = s2fwd;
 	if (reset) begin
 		s3op <= `OPnop;
 		s3src <= 0;
 		s3dst <= 0;
 		s3dstreg <= 0;
 	end else begin
+		s3fwd <= s2fwd;
 		s3op  <= s2op;
 		s3src <= (s2typ == `ILTypeMem) ? dm[s2src] : s2src;
 		s3dst <= s2dst;
@@ -261,7 +263,6 @@ end
 
 // Stage 4: ALU
 always @(posedge clk) begin
-assign s4fwd = s3fwd;
 	if (reset) begin
 		s4op  <= `OPnop;
 		s4alu <= 0;
@@ -274,22 +275,23 @@ assign s4fwd = s3fwd;
 		case (s3op) //ALU supports reverse Execution Now
 			`OPxhi: begin s4alu <= {s3dst[15:8] ^ s3src[7:0], s3dst[7:0]}; end
 			`OPxlo: begin s4alu <= {s3dst[15:8], s3dst[7:0] ^ s3src[7:0]}; end
-			`OPlhi: begin if(s4fwd) begin s4alu <= {s3src[7:0], 8'b0}; end else `DREST end
-			`OPllo: begin if(s4fwd) begin s4alu <= s3src; end else `DREST end
-			`OPadd: begin s4alu <= s3dst + (s4fwd ? s3src : -s3src); end
-			`OPsub: begin s4alu <= s3dst + (s4fwd ? -s3src : s3src); end
+			`OPlhi: begin if(s3fwd) begin s4alu <= {s3src[7:0], 8'b0}; end else `DREST end
+			`OPllo: begin if(s3fwd) begin s4alu <= s3src; end else `DREST end
+			`OPadd: begin s4alu <= s3dst + (s3fwd ? s3src : -s3src); end
+			`OPsub: begin s4alu <= s3dst + (s3fwd ? -s3src : s3src); end
 			`OPxor: begin s4alu <= s3dst ^ s3src; end
-			`OProl: begin if(s4fwd) begin 
+			`OProl: begin if(s3fwd) begin 
 				s4alu <= (s3dst << (s3src & 16'h000f)) | (s3dst >> ((16 - s3src) & 16'h000f)); end //rotate left
 				else begin
 				s4alu <= (s3dst << ((16 - s3src) & 16'h000f)) | (s3dst >> (s3src & 16'h000f)); //rotate right
 				end
 			end
-			`OPshr: begin if(s4fwd) begin s4alu <= {{16{s3dst[15]}}, s3dst} >> (s3src & 16'h000f); end else `DREST end
-			`OPor:  begin if(s4fwd) begin s4alu <= s3dst | s3src; end else `DREST end
-			`OPand: begin if(s4fwd) begin s4alu <= s3dst & s3src; end else `DREST end
+			`OPshr: begin if(s3fwd) begin s4alu <= {{16{s3dst[15]}}, s3dst} >> (s3src & 16'h000f); end else `DREST end
+			`OPor:  begin if(s3fwd) begin s4alu <= s3dst | s3src; end else `DREST end
+			`OPand: begin if(s3fwd) begin s4alu <= s3dst & s3src; end else `DREST end
 			`OPex: begin s4alu <= s3src; end
-			`OPdup begin if(s4fwd) begin s4alu <= s3src; end else `DREST end
+			`OPdup: begin if(s3fwd) begin s4alu <= s3src; end else `DREST end
+
 		endcase
 	end
 	#5 $display($time, ": 4:           op: %s,          alu: %x,            dstreg: %d", opStr(s4op), s4alu, s4dstreg);
