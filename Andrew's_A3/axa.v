@@ -117,6 +117,11 @@ reg `WORD  s4alu;
 reg `REG   s4dstreg;
 
 reg fwd;
+reg s0fwd;
+reg s1fwd;
+reg s2fwd;
+reg s3fwd;
+reg s4fwd;
 
 // Stage 0: Update PC
 assign s0blocked = (opIsBranch(s1op) || opIsBranch(s2op));
@@ -127,6 +132,7 @@ assign s0shouldjmp =
 	|| (s2op == `OPbn && s2dst[15] == 1)
 	|| (s2op == `OPbnn && s2dst[15] == 0);
 assign s0jmptarget = (s2typ == `ILTypeImm) ? (s0pc + s2src - 1) : s2src;
+assign s0fwd = fwd;
 
 always @(posedge clk) begin
 	if (reset) begin
@@ -135,6 +141,7 @@ always @(posedge clk) begin
 		$readmemh0(r);
 		$readmemh1(im);
 		$readmemh2(dm);
+		fwd <= 1;
 	end else if (s0shouldjmp) begin
 		// save pc before jumping so land can push it to undo stack
 		// -1 because stage 0 blocks one instruction after the branch
@@ -142,7 +149,7 @@ always @(posedge clk) begin
 		s0pc <= s0jmptarget;
 	end else if (!s0blocked && !s0waiting) begin
 		s0lastpc <= s0pc;
-		 s0pc <= s0pc + (fwd ? 1 : -1); //Increment or Decrement based on fwd
+		s0pc <= s0pc + (s0fwd ? 1 : -1); //Increment or Decrement based on s0fwd
 	end
 	#1 $display($time, ": 0: s0pc: %d, should jump: %b, lastpc: %d", s0pc, s0shouldjmp, s0lastpc);
 end
@@ -151,6 +158,7 @@ end
 assign s1blocked = (opIsBlocking(s1op) || opIsBlocking(s2op)
                  || opIsBlocking(s3op) || opIsBlocking(s4op));
 assign s1waiting = s2blocked || s2waiting;
+assign s1fwd = s0fwd;
 
 always @(posedge clk) begin
 	// s0blocked: Special case, s0 can't emit NOPs, so s1 needs to do that for it.
@@ -190,6 +198,7 @@ assign s2blocked =
 		|| (s1src == s4dstreg && opWritesToDst(s4op))));
 assign s2waiting = 0;
 assign s2undidx = s2usp - s1src - 1; // In own assign to clip value to `UPTR
+assign s2fwd = s1fwd;
 
 always @(posedge clk) begin
 	if (reset || (s2blocked && !s2waiting)) begin
@@ -215,7 +224,7 @@ always @(posedge clk) begin
 		s2dstreg <= s1dst;
 		// Push onto undo stack if this is a push instruction
 		if (s1op `OP_PUSHES) begin
-			if (fwd) begin
+			if (s2fwd) begin
 				// Most instructions push the value of the dst register
 				// but land pushes the value of the pc before the most
 				// recent jump. To avoid interlocks on the undo stack,
@@ -231,6 +240,7 @@ end
 
 // Stage 3: Read / write memory
 always @(posedge clk) begin
+assign s3fwd = s2fwd;
 	if (reset) begin
 		s3op <= `OPnop;
 		s3src <= 0;
@@ -251,11 +261,11 @@ end
 
 // Stage 4: ALU
 always @(posedge clk) begin
+assign s4fwd = s3fwd;
 	if (reset) begin
 		s4op  <= `OPnop;
 		s4alu <= 0;
 		s4dstreg <= 0;
-		fwd <= 1;
 	end else begin
 		s4op <= s3op;
 		s4dstreg <= s3dstreg;
@@ -264,23 +274,22 @@ always @(posedge clk) begin
 		case (s3op) //ALU supports reverse Execution Now
 			`OPxhi: begin s4alu <= {s3dst[15:8] ^ s3src[7:0], s3dst[7:0]}; end
 			`OPxlo: begin s4alu <= {s3dst[15:8], s3dst[7:0] ^ s3src[7:0]}; end
-			`OPlhi: begin if(fwd) begin s4alu <= {s3src[7:0], 8'b0}; end else `DREST end
-			`OPllo: begin if(fwd) begin s4alu <= s3src; end else `DREST end
-			`OPadd: begin s4alu <= s3dst + (fwd ? s3src : -s3src); end
-			`OPsub: begin s4alu <= s3dst + (fwd ? -s3src : s3src); end
+			`OPlhi: begin if(s4fwd) begin s4alu <= {s3src[7:0], 8'b0}; end else `DREST end
+			`OPllo: begin if(s4fwd) begin s4alu <= s3src; end else `DREST end
+			`OPadd: begin s4alu <= s3dst + (s4fwd ? s3src : -s3src); end
+			`OPsub: begin s4alu <= s3dst + (s4fwd ? -s3src : s3src); end
 			`OPxor: begin s4alu <= s3dst ^ s3src; end
-			`OProl: begin if(fwd) begin 
+			`OProl: begin if(s4fwd) begin 
 				s4alu <= (s3dst << (s3src & 16'h000f)) | (s3dst >> ((16 - s3src) & 16'h000f)); end //rotate left
 				else begin
 				s4alu <= (s3dst << ((16 - s3src) & 16'h000f)) | (s3dst >> (s3src & 16'h000f)); //rotate right
 				end
 			end
-			`OPshr: begin if(fwd) begin s4alu <= {{16{s3dst[15]}}, s3dst} >> (s3src & 16'h000f); end else `DREST end
-			`OPor:  begin if(fwd) begin s4alu <= s3dst | s3src; end else `DREST end
-			`OPand: begin if(fwd) begin s4alu <= s3dst & s3src; end else `DREST end
+			`OPshr: begin if(s4fwd) begin s4alu <= {{16{s3dst[15]}}, s3dst} >> (s3src & 16'h000f); end else `DREST end
+			`OPor:  begin if(s4fwd) begin s4alu <= s3dst | s3src; end else `DREST end
+			`OPand: begin if(s4fwd) begin s4alu <= s3dst & s3src; end else `DREST end
 			`OPex: begin s4alu <= s3src; end
-			`OPdup begin if(fwd) begin s4alu <= s3src; end else `DREST end
-
+			`OPdup begin if(s4fwd) begin s4alu <= s3src; end else `DREST end
 		endcase
 	end
 	#5 $display($time, ": 4:           op: %s,          alu: %x,            dstreg: %d", opStr(s4op), s4alu, s4dstreg);
