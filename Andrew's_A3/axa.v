@@ -58,6 +58,11 @@
 `define ILTypeMem 2'b10
 `define ILTypeUnd 2'b11
 
+`define SIGILL 4'b0001;
+`define SIGTMV 4'b0010;
+`define SIGCHK 4'b0100;
+`define SIGLEX 4'b1000;
+
 module testbench;
 reg reset = 0;
 reg clk = 0;
@@ -78,6 +83,7 @@ initial begin
 end
 endmodule
 
+//Restore Register d from the undo buffer
 `define DREST begin s4alu <= u[s2usp]; s2usp <= s2usp - 1; end
 
 module processor (halt, reset, clk);
@@ -116,11 +122,15 @@ reg `OP    s4op;
 reg `WORD  s4alu;
 reg `REG   s4dstreg;
 
-reg fwd;
+reg s4halt;
+reg `REG check;
+reg `REG errors;
+
 reg s0fwd;
 reg s1fwd;
 reg s2fwd;
 reg s3fwd;
+reg s4fwd;
 
 // Stage 0: Update PC
 assign s0blocked = (opIsBranch(s1op) || opIsBranch(s2op));
@@ -139,9 +149,12 @@ always @(posedge clk) begin
 		$readmemh0(r);
 		$readmemh1(im);
 		$readmemh2(dm);
-		fwd <= 1;
 	end else begin 
-		s0fwd <= fwd;
+		if (errors == 0) begin
+			s0fwd <= 1;
+		end else begin
+			s0fwd <= 0;
+		end
 		if (s0shouldjmp) begin
 			// save pc before jumping so land can push it to undo stack
 			// -1 because stage 0 blocks one instruction after the branch
@@ -149,7 +162,7 @@ always @(posedge clk) begin
 			s0pc <= s0jmptarget;
 		end else if (!s0blocked && !s0waiting) begin
 			s0lastpc <= s0pc;
-			 s0pc <= s0pc + (fwd ? 1 : -1); //Increment or Decrement based on fwd
+			 s0pc <= s0pc + ((errors == 0) ? 1 : -1); //Increment or Decrement based on errors
 		end
 	end
 	#1 $display($time, ": 0: s0pc: %d, should jump: %b, lastpc: %d", s0pc, s0shouldjmp, s0lastpc);
@@ -267,11 +280,13 @@ always @(posedge clk) begin
 		s4op  <= `OPnop;
 		s4alu <= 0;
 		s4dstreg <= 0;
+		errors <= 0;
+		check <= 0;
 	end else begin
+		s4fwd <= s3fwd;
 		s4op <= s3op;
 		s4dstreg <= s3dstreg;
-		// This case should handle every instruction for which
-		// opWritesToDst is true
+
 		case (s3op) //ALU supports reverse Execution Now
 			`OPxhi: begin s4alu <= {s3dst[15:8] ^ s3src[7:0], s3dst[7:0]}; end
 			`OPxlo: begin s4alu <= {s3dst[15:8], s3dst[7:0] ^ s3src[7:0]}; end
@@ -292,6 +307,34 @@ always @(posedge clk) begin
 			`OPex: begin s4alu <= s3src; end
 			`OPdup: begin if(s3fwd) begin s4alu <= s3src; end else `DREST end
 
+			`OPjerr: begin 
+				if(s3fwd) begin 
+					check <= check | s3src; $display($time, ": 5: JERR-FWD");
+				end else begin
+					check <= check & ~s3src; 
+					errors <= errors & ~s3src; $display($time, ": 5: JERR-REVERSE");
+				end
+			end
+			`OPcom: begin
+				if(s3fwd) begin
+					check <= 0;
+				end else begin
+					errors <= 0;
+				end
+			end
+			`OPfail: begin 
+				if(s3fwd) begin
+					if((s3src & ~check) != 0) begin
+						s4halt <= 1; $display($time, ": 5: FAILED-HALT");
+					end else begin
+						s4halt <= 0; errors <= s3src & check; $display($time, ": 5: FAILED-REVERSE");
+					end
+				end else begin
+					//NOP do nothing in reverse execution
+				end		
+			end
+			
+
 		endcase
 	end
 	#5 $display($time, ": 4:           op: %s,          alu: %x,            dstreg: %d", opStr(s4op), s4alu, s4dstreg);
@@ -303,16 +346,22 @@ always @(posedge clk) begin
 	if (reset) begin
 		halt <= 0;
 		$display($time, ": 5: reset");
-	end else if (s4op == `OPsys) begin
-		halt <= 1;
-		$display($time, ": 5: halting");
-	end else if (s4op == `OPfail) begin
-		halt <= 1;
-		$display($time, ": 5: FAILED");
-	end else if (opWritesToDst(s4op)) begin
-		r[s4dstreg] <= s4alu;
-		$display($time, ": 5: WRITING ", s4alu, " to reg ", s4dstreg);
-	end
+	end 
+	case (s4op)
+		`OPsys: begin halt <= 1; $display($time, ": 5: halting"); end
+		`OPfail: begin 
+			halt <= s4halt;	
+		end
+		`OPjerr: begin
+			//TODO jump to address in $d s4dstreg
+		end
+		default: begin
+			if (opWritesToDst(s4op)) begin
+				r[s4dstreg] <= s4alu;
+				$display($time, ": 5: WRITING ", s4alu, " to reg ", s4dstreg);
+			end
+		end
+	endcase
 	#9 $display(""); // Spacer
 end
 
