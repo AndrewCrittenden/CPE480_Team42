@@ -1,0 +1,434 @@
+`define WORD    [15:0]
+`define WHIGH   [15:8]
+`define WLOW    [7:0]
+`define INST    [15:0]
+`define OP   [6:0]
+`define REGNAME [3:0]
+`define REGSIZE [15:0]
+`define MEMSIZE [65535:0]
+
+`define OPLEN   [15]       // 1 for long opcode, 0 for short opcode
+`define SHORTOP [15:12]
+`define LONGOP  [15:10]
+`define XLONGOP [15:9]
+
+`define RD         [7:4]
+`define RS         [3:0]      // For long opcodes
+`define ILSRC_SIGN [3]
+`define ILTYPE     [9:8]      // Src Reg, i4, memory location or undo stack
+`define ISSRCLO    [3:0]      // Short instruction source (low half)
+`define ISSRCHI    [11:8]     // High half
+`define ISSRC_SIGN [11]
+
+// virtual op codes / state numbers
+`define OPxhi  7'b1000000  // First 4 only have the low 4 bits as real op code
+`define OPlhi  7'b1000001
+`define OPxlo  7'b1000010
+`define OPllo  7'b1000011  // The rest have the low 6 bits as real op code
+`define OPadd  7'b1100000
+`define OPsub  7'b1100001
+`define OPxor  7'b1100010
+`define OProl  7'b1100011
+`define OPshr  7'b1100100
+`define OPor   7'b1100101
+`define OPand  7'b1100110
+`define OPdup  7'b1100111
+`define OPbz   7'b1101000  // same as... jz
+`define OPbnz  7'b1101001  //  jnz
+`define OPbn   7'b1101010  //  jn
+`define OPbnn  7'b1101011  //  jnn
+`define OPjerr 7'b1110000
+`define OPfail 7'b1110001
+`define OPex   7'b1110010
+`define OPcom  7'b1110011
+`define OPland 7'b1110100
+`define OPsys  7'b1111111
+`define OPNOP  7'b0000000
+
+`define OPrland 7'b1101000
+
+`define NOP     16'b0000000000000000
+
+`define STfetch 7'b0000000
+`define STexec  7'b0000001
+`define STtype  7'b0000010  // State for grabbing type (register, imm, memory, or undo stack)
+`define STex1   7'b0000011
+`define STex2   7'b0000100
+
+`define ILTypeImm 2'b00
+`define ILTypeReg 2'b01
+`define ILTypeMem 2'b10
+`define ILTypeUnd 2'b11     // TODO: Figure out why
+
+`define IsBranch      [13:12]    // Will be 10 for branches
+`define PCSAVE begin u[usp] <= pc; usp <= usp + 1; end  // For land puts current pc into       buffer & increment stack pointer
+`define DSAVE begin u[usp] <= r[d]; usp <= usp + 1; end // puts destination register                                  //                                                                                         into buffer u & increment stack pointer
+
+module testbench;
+    reg reset = 0;
+    reg clk = 0;
+    wire halted;
+    processor PE(halted, reset, clk);
+    initial begin
+	$dumpfile;
+        $dumpvars(0,PE.u[0],PE.u[1],PE.rfile[1], PE.pc,PE.ir,PE.ir0);
+	//$dumpvars(0, PE);
+	#10 reset = 1;
+	#10 reset = 0;
+	while (!halted) begin
+	    #10 clk = 1;
+	    #10 clk = 0;
+	end
+	$finish;
+    end
+endmodule
+
+
+
+module processor (halt, reset, clk);
+    output reg halt;
+    input reset, clk;
+    
+reg `WORD rfile `REGSIZE;
+    wire `REGNAME d;
+    reg `WORD r `REGSIZE;
+    reg `WORD dmem  `MEMSIZE;
+    reg `WORD imem  `MEMSIZE;
+    reg `WORD pc  = 0;
+    reg `INST ir  = 0;
+    reg `WORD src = 0;       // Used in stage 3
+    reg `WORD t   = 0;       // Temp, used for ex
+    reg `WORD usp = 0;    // undo stack pointer
+    reg `WORD target;	     // jump target
+    reg jump;		     // are we jumping?
+    reg `WORD pcWriter;
+    reg `WORD ir0, ir1, ir2, ir3;
+    reg `WORD im1;
+    reg `WORD rd0, rd1, rd2, rd3; 
+    reg `WORD rs0, rs1, rs2, rs3;
+    reg `WORD res;
+    reg `OP   op3;         // Stores the opcode of the instr in stage 3
+    reg `OP   op2;
+    reg `WORD u[65535:0];        // undo buffer?
+    //integer j;
+
+    always @(reset) begin
+	halt = 0;
+
+	pc   = 0;
+	ir0  = `NOP;
+        ir1  = `NOP;
+        ir2  = `NOP;
+        ir3  = `NOP;
+
+        jump = 0;        
+
+	$readmemh0(rfile);
+	$readmemh1(imem);
+	$readmemh2(dmem);
+        $readmemh3(u);
+
+    end
+
+
+
+    function setsrd;
+      input `OP opcode;
+      setsrd = ((opcode == `OPxhi) ||
+                (opcode == `OPxlo) ||
+                (opcode == `OPlhi) ||
+                (opcode == `OPllo) ||
+                (opcode == `OPadd) ||
+                (opcode == `OPsub) ||
+                (opcode == `OPxor) ||
+                (opcode == `OPex)  ||
+                (opcode == `OProl) ||
+                (opcode == `OPshr) ||
+                (opcode == `OPor)  ||
+                (opcode == `OPand) ||
+                (opcode == `OPdup));
+    endfunction
+
+    function usesRS;
+      input `INST inst;
+      usesRS = (inst `OPLEN && inst `ILTYPE == `ILTypeReg);   // Short ops never use rs
+    endfunction
+
+    function rdDependency;   // Tests for dependency issues between stages
+      input `WORD rd0, rd1, rd2, rd3, rs0, rs1, rs2, rs3, ir0, ir1, ir2, ir3;
+      rdDependency = ( (ir0 != `NOP   &&   ir1 != `NOP  &&   (rd0 == rd1 || (usesRS(ir1) && rs0 == rd1)) ) ||
+                       (ir0 != `NOP   &&   ir2 != `NOP  &&   (rd0 == rd2 || (usesRS(ir2) && rs0 == rd2)) ) || 
+                       //(ir0 != `NOP   &&   ir3 != `NOP  &&   (rd0 == rd3 || (usesRS(ir3) && rs0 == rd3)) ) ||
+                       (ir1 != `NOP   &&   ir2 != `NOP  &&   (rd1 == rd2 || (usesRS(ir2) && rs1 == rd2)) ) || 
+                       (ir1 != `NOP   &&   ir3 != `NOP  &&   (rd1 == rd3 || (usesRS(ir3) && rs1 == rd3)) ) || 
+                       (ir2 != `NOP   &&   ir3 != `NOP  &&   (rd2 == rd3 || (usesRS(ir3) && rs2 == rd3)) ) );
+    endfunction
+
+    function usesim;
+      input `INST inst;
+      usesim = ( (!(inst `OPLEN) || inst `ILTYPE == `ILTypeImm) && inst != `NOP);   // NOPs never use immediate
+    endfunction
+
+    function falseExecCondition;   // Written from scratch and untested
+      input `OP opcode;
+      falseExecCondition = (((opcode == `OPbnz) &&         rfile[ir2 `RD]  == 0) ||
+                            ((opcode == `OPbz)  &&         rfile[ir2 `RD]  != 0) ||
+                            ((opcode == `OPbn)  && $signed(rfile[ir2 `RD]) >= 0) ||
+                            ((opcode == `OPbnn) && $signed(rfile[ir2 `RD]) <  0) );
+    endfunction
+
+
+    // Stage 0: Instruction fetch
+    always @(posedge clk) begin
+      if (rdDependency(rd0, rd1, rd2, rd3, 
+                       rs0, rs1, rs2, rs3, 
+                       ir0, ir1, ir2, ir3) || jump) begin   // If blocked by stage 1, stall
+        ir0 <= `NOP;
+        rd0 <= 0;
+      end else begin
+        ir = imem[pc];
+
+        rd0 <= { 12'b0, ir `RD};      // Just a register number, not the value;
+        rs0 <= { 12'b0, ir `RS};
+
+       ir0 <= imem[pc];
+       if (op3 == `OPland) begin
+         `PCSAVE pc <= pc+1; 
+         $display("Hello"); 
+       end
+      end
+    end  // End of stage 0
+
+
+    // Stage 1: Reg. Read
+    always @(posedge clk) begin
+      if (rdDependency(rd0, rd1, rd2, rd3, 
+                       rs0, rs1, rs2, rs3, 
+                       ir0, ir1, ir2, ir3) || jump ) begin
+        ir1   <= `NOP;
+      end else begin
+        if (!(ir1 `OPLEN)) begin
+          if (ir1 == `NOP) begin
+            op2 = {1'b0,  ir1 `LONGOP };
+          end else begin
+            op2 = {3'b100, ir1 `SHORTOP};
+          end
+        end else begin
+          op2 = {1'b1,  ir1 `LONGOP };
+        end
+
+        // TODO: Undo stack
+        case(op2)
+          `OPlhi:
+  	    begin `DSAVE r[d] <= {rs2 `WLOW, 8'b0}; $display("lhi"); end
+	  `OPllo:
+	    begin `DSAVE r[d] <= rs2; end
+	  `OPshr:
+	    begin `DSAVE r[d] <= rd2 >> rs2; end
+          `OPand:
+            begin `DSAVE r[d] <= rd2 & rs2; $display("AND"); end
+          `OPor:
+            begin `DSAVE r[d] <= rd2 | rs2; end
+          `OPdup:
+            begin `DSAVE r[d] <=  rs2; end
+        endcase
+
+        ir1 <= ir0;   // forward instruction from stage 0 into 1
+
+        if (usesim(ir0)) begin
+          if (!(ir0 `OPLEN)) begin     // xhi, xlo, lhi, llo
+            im1 <= {{8{ir0 `ISSRC_SIGN}}, ir0 `ISSRCHI, ir0 `ISSRCLO};
+          end else begin
+            im1 <= { {12{ir0[3]}}, ir0 `RS};  // im1 sign extended
+          end
+        end
+
+        rd1 <= rd0;    // Fetch Rd
+        rs1 <= rs0;    // Fetch Rs
+      end
+
+    end
+
+
+    // Stage 2: Mem read
+    always @(posedge clk) begin
+      // Short instructions get i4 from stage 1
+      if (ir1 `OPLEN) begin
+        // MUX3
+        case (ir1 `ILTYPE)
+          `ILTypeImm: begin    src <= im1;            end
+          `ILTypeReg: begin    src <= rfile[ir1 `RS]; end
+          `ILTypeMem: begin    src <= dmem[rfile[ir1 `RS] ];      end
+          `ILTypeUnd: begin   src <= u[rfile[ir1 `RS]];  end
+        endcase
+      end else begin
+        src <= im1;       // TODO: Find out how to make this cleaner
+      end
+
+      rd2 <= rd1;    // Fetch Rd
+      rs2 <= rs1;    // Fetch Rs
+
+      // Write to memory
+      if (ir1 `LONGOP == `OPex) begin
+        dmem[rfile[ir1 `RS] ] <= rfile[ir1 `RD];
+      end
+
+      pcWriter = (jump ? target : pc);
+      //if (jump)  $display($time, ": jump = 1,   target = ", target, ",   pcWriter = ", pcWriter);
+
+      if (rdDependency(rd0, rd1, rd2, rd3, 
+                       rs0, rs1, rs2, rs3, 
+                       ir0, ir1, ir2, ir3) ) begin   // If blocked by stage 3, stall
+        ir2 <= `NOP;
+        pc <= pcWriter - 1;
+        //$display($time, ": pc was not incremented ");
+      end else begin
+        pc  <= pcWriter + 1;
+      end
+
+      //$display($time, ": pc = ", pc);
+      ir2 <= ir1;
+    end
+
+    
+    // Stage 3: ALU Op & Reg. write
+    always @(posedge clk) begin
+      rd3 <= rd2;    // Fetch Rd
+      rs3 <= rs2;    // Fetch Rs
+
+      // Sloppy, but it works
+      if (jump) begin
+        ir2 = `NOP;
+      end
+
+      // op3 is just the opcode with whatever padding it takes to match the `OPxxxx codes above
+      if (!(ir2 `OPLEN)) begin
+        if (ir2 == `NOP) begin
+          op3 = {1'b0,  ir2 `LONGOP };
+        end else begin
+          op3 = {3'b100, ir2 `SHORTOP};
+        end
+      end else begin
+        op3 = {1'b1,  ir2 `LONGOP };
+      end
+
+
+      case (op3)    // select case (Opcode field of Instruction from 2)
+        `OPxhi: begin 
+          $display($time, ": XHI %d, %d", ir2 `RD, src);
+          res = {rfile[ir2 `RD]`WHIGH ^ src`WLOW, rfile[ir2 `RS]`WLOW}; 
+        end
+        `OPxlo: begin 
+          $display($time, ": XLO %d, %d", ir2 `RD, src);
+          res = {rfile[ir2 `RD]`WHIGH, rfile[ir2 `RD]`WLOW ^ src`WLOW}; 
+        end
+        `OPlhi: begin 
+          $display($time, ": LHI %d, %d", ir2 `RD, src);
+          res = {src `WLOW, 8'b0}; 
+        end
+        `OPllo: begin 
+          $display($time, ": LLO %d, %d", ir2 `RD, src);
+          res = src;
+        end
+
+        `OPadd: begin 
+          $display($time, ": ADD %d, %d", ir2 `RD, src);
+          res = rfile[ir2 `RD] + src;
+        end
+        `OPsub: begin 
+          $display($time, ": SUB %d, %d", ir2 `RD, src);
+          res = rfile[ir2 `RD] - src;
+        end
+        `OPxor: begin 
+          $display($time, ": XOR %d, %d", ir2 `RD, src);
+          res = rfile[ir2 `RD] ^ src;
+        end
+        `OProl: begin 
+          $display($time, ": ROL %d, %d", ir2 `RD, src);
+          res = ( (rfile[ir2 `RD] << src) | (rfile[ir2 `RD] >> (16-src)) ); 
+        end
+        `OPshr: begin 
+          $display($time, ": SHR %d, %d", ir2 `RD, src);
+          res = rfile[ir2 `RD] >> src; 
+        end
+        `OPor:  begin 
+          $display($time, ": OR %d, %d", ir2 `RD, src);
+          res = rfile[ir2 `RD] | src;
+        end
+        `OPand: begin 
+          $display($time, ": AND %d, %d", ir2 `RD, src);
+          res = rfile[ir2 `RD] & src;
+        end
+        `OPdup: begin 
+          $display($time, ": DUP %d, %d", ir2 `RD, src);
+          res = src;
+        end
+
+        `define TAKE_BRANCH res = ((ir2 `ILTYPE == `ILTypeImm) ? pc + src - 4 : src - 1)
+
+        `OPbz:  begin
+          $display($time, ": BZ  %d, %d", ir2 `RD, src);
+          if ((rfile[ir2 `RD] == 0)) begin
+            `TAKE_BRANCH;
+            res = res + 2;
+          end
+        end
+        `OPbnz: begin
+          $display($time, ": BNZ  %d, %d", ir2 `RD, src);
+          if ((rfile[ir2 `RD] != 0)) `TAKE_BRANCH;
+        end
+        `OPbn:  begin
+          $display($time, ": BN  %d, %d", ir2 `RD, src);
+          if ($signed(rfile[ir2 `RD]) < 0)  `TAKE_BRANCH;
+        end
+        `OPbnn: begin 
+          $display($time, ": BNN  %d, %d", ir2 `RD, src);
+          if ($signed(rfile[ir2 `RD]) >= 0) `TAKE_BRANCH;
+        end
+
+        `OPex:  begin 
+          $display($time, ": EX  %d, %d", ir2 `RD, src);
+          rfile[ir2 `RD] <= src;
+          src <= rfile[ir2 `RD];
+          //res = t;
+        end
+
+        `OPland: begin $display($time, ": LAND"); end   // All the stuff for this should be covered in other steps
+        `OPjerr: begin $display($time, ": JERR"); end
+        `OPcom:  begin $display($time, ": COM"); end
+        // HALTs
+        `OPfail: begin $display($time, ": FAIL");   halt <= 1; end // Not implemented in this project
+        `OPsys:  begin $display($time, ": SYS");    halt <= 1; end
+        `OPNOP:  begin $display($time, ": NOP");               end  
+        default: begin $display($time, " ", op3, ": BAD OP"); halt <= 1; end
+
+      endcase
+
+      if (ir2 `OPLEN && ir2 `IsBranch == 2'b10) begin
+        if (!falseExecCondition(op3)) begin
+          $display($time, ": Taking the branch...");
+          jump <= 1;   
+          target <= res;
+
+          ir0 = `NOP;      // When you branch, flush the pipeline
+          ir1 = `NOP;
+          ir2 = `NOP;
+          ir3 <= `NOP;
+        end else begin
+          //$display($time, ": NOT taking branch...");
+          jump <= 0;
+        end
+      end else begin
+        jump <= 0;
+        ir3 <= ir2;
+      end
+
+      if (setsrd(op3)) begin
+        //$display($time, ": Writing to reg");
+        jump <= 0;
+        rfile[ir2 `RD] <= res;
+      end
+
+    end   // End of stage 3
+
+endmodule
