@@ -58,10 +58,10 @@
 `define ILTypeMem 2'b10
 `define ILTypeUnd 2'b11
 
-`define SIGILL 4'b0001;
-`define SIGTMV 4'b0010;
-`define SIGCHK 4'b0100;
-`define SIGLEX 4'b1000;
+`define SIGILL 4'b0001
+`define SIGTMV 4'b0010
+`define SIGCHK 4'b0100
+`define SIGLEX 4'b1000
 
 module testbench;
 reg reset = 0;
@@ -234,6 +234,9 @@ always @(posedge clk) begin
 			`ILTypeUnd: s2src <= u[s2undidx];
 			`ILTypeReg, `ILTypeMem: s2src <= r[s1src];
 		endcase
+		if (s1op == `OPex && s1typ != `ILTypeMem) begin
+			errors <= errors | `SIGILL; 
+		end
 		s2dst <= r[s1dst];
 		s2dstreg <= s1dst;
 		// Push onto undo stack if this is a push instruction
@@ -316,6 +319,15 @@ always @(posedge clk) begin
 				end else begin
 					check <= check & ~s3src; 
 					errors <= errors & ~s3src; $display($time, ": 5: JERR-REVERSE");
+					if (errors == 0) begin
+						//Flush the Pipe with NOPs
+						s1ir <= `NOP;
+						s2op  <= `OPnop;
+						s3op <= `OPnop;
+						s4op  <= `OPnop;
+						//Set Pc to address in register $d
+						s0pc <= s3dst;
+					end
 				end
 			end
 			`OPcom: begin
@@ -330,7 +342,8 @@ always @(posedge clk) begin
 					if((s3src & ~check) != 0) begin
 						halt <= 1; $display($time, ": 5: FAILED-HALT");
 					end else begin
-						halt <= 0; errors <= s3src & check; $display($time, ": 5: FAILED-REVERSE");
+						halt <= 0; 
+						errors <= s3src & check; $display($time, ": 5: FAILED-REVERSE");
 					end
 				end else begin
 					//NOP do nothing in reverse execution
