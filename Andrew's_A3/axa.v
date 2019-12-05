@@ -282,6 +282,8 @@ always @(posedge clk) begin
 		s4dstreg <= 0;
 		errors <= 0;
 		check <= 0;
+		halt <= 0;
+		$display($time, ": 5: reset");
 	end else begin
 		s4fwd <= s3fwd;
 		s4op <= s3op;
@@ -307,6 +309,7 @@ always @(posedge clk) begin
 			`OPex: begin s4alu <= s3src; end
 			`OPdup: begin if(s3fwd) begin s4alu <= s3src; end else `DREST end
 
+			`OPsys: begin halt <= 1; $display($time, ": 5: halting"); end
 			`OPjerr: begin 
 				if(s3fwd) begin 
 					check <= check | s3src; $display($time, ": 5: JERR-FWD");
@@ -325,21 +328,25 @@ always @(posedge clk) begin
 			`OPfail: begin 
 				if(s3fwd) begin
 					if((s3src & ~check) != 0) begin
-						s4halt <= 1; $display($time, ": 5: FAILED-HALT");
+						halt <= 1; $display($time, ": 5: FAILED-HALT");
 					end else begin
-						s4halt <= 0; errors <= s3src & check; $display($time, ": 5: FAILED-REVERSE");
+						halt <= 0; errors <= s3src & check; $display($time, ": 5: FAILED-REVERSE");
 					end
 				end else begin
 					//NOP do nothing in reverse execution
 				end		
 			end
-			
-
 		endcase
+		if (opWritesToDst(s4op)) begin
+				r[s4dstreg] <= s4alu;
+				$display($time, ": 5: WRITING ", s4alu, " to reg ", s4dstreg);
+		end
 	end
 	#5 $display($time, ": 4:           op: %s,          alu: %x,            dstreg: %d", opStr(s4op), s4alu, s4dstreg);
+	#9 $display(""); // Spacer
 end
 
+/*
 // Stage 5: Write registers
 // This stage also owns "halt"
 always @(posedge clk) begin
@@ -364,6 +371,7 @@ always @(posedge clk) begin
 	endcase
 	#9 $display(""); // Spacer
 end
+*/
 
 function opHasDst (input `OP op);
 	opHasDst = (op `OP_LEN == 1'b0)
