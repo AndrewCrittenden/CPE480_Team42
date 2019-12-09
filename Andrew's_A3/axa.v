@@ -236,6 +236,7 @@ always @(posedge clk) begin
 		endcase
 		if (s1op == `OPex && s1typ != `ILTypeMem) begin
 			errors <= errors | `SIGILL;
+			s2op  <= `OPnop;
 		end
 		s2dst <= r[s1dst];
 		s2dstreg <= s1dst;
@@ -350,7 +351,7 @@ always @(posedge clk) begin
 				end		
 			end
 		endcase
-		if (opWritesToDst(s4op) && s3op != `OPex && s3typ == `ILTypeMem) begin
+		if (opWritesToDst(s4op)) begin
 				r[s4dstreg] <= s4alu;
 				$display($time, ": 5: WRITING ", s4alu, " to reg ", s4dstreg);
 		end
