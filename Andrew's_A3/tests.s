@@ -7,7 +7,7 @@
 l16 $15, 0 ; tests passed count
 
 ; nops (in this project)
-jerr $0, 1
+; jerr $0, 1
 com
 
 ; test l16
