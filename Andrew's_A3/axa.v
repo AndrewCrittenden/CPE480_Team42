@@ -350,7 +350,7 @@ always @(posedge clk) begin
 				end		
 			end
 		endcase
-		if (opWritesToDst(s4op)) begin
+		if (opWritesToDst(s4op) & s3op != `OPex && s3typ == `ILTypeMem) begin
 				r[s4dstreg] <= s4alu;
 				$display($time, ": 5: WRITING ", s4alu, " to reg ", s4dstreg);
 		end
@@ -376,7 +376,7 @@ always @(posedge clk) begin
 			//TODO jump to address in $d s4dstreg
 		end
 		default: begin
-			if (opWritesToDst(s4op) & s3op != `OPex && s3typ == `ILTypeMem) begin
+			if (opWritesToDst(s4op)) begin
 				r[s4dstreg] <= s4alu;
 				$display($time, ": 5: WRITING ", s4alu, " to reg ", s4dstreg);
 			end
