@@ -133,7 +133,7 @@ reg s3fwd;
 reg s4fwd;
 
 // Stage 0: Update PC
-assign s0blocked = (opIsBranch(s1op) || opIsBranch(s2op) || s1op == `OPjerr || s2op == `OPjerr);
+assign s0blocked = (opIsBranch(s1op) || opIsBranch(s2op) || s1op == `OPjerr || s2op == `OPjerr || s1op ==`OPex);
 assign s0waiting = s1blocked || s1waiting;
 assign s0shouldjmp =
 	   (s2op == `OPbz && s2dst == 0)
@@ -196,6 +196,13 @@ always @(posedge clk) begin
 				errors <= errors & ~s1src; $display($time, ": 5: JERR-REVERSE");
 			end
 		end
+
+		if (s1op == `OPex && s1typ != `ILTypeMem) begin
+			//s0pc <= s0pc - 2;
+			errors <= errors | `SIGILL;
+			//s2op  <= `OPnop;
+			#3 $display($time, ": Illegal instruction Errors: %d", errors);
+		end
 	#2 $display($time, ": 1: ir: %x, op: %s, typ: %b, src: %x, dst: %x, lastpc: %d", s1ir, opStr(s1op), s1typ, s1src, s1dst, s1lastpc);
 end
 
@@ -246,10 +253,7 @@ always @(posedge clk) begin
 			`ILTypeUnd: s2src <= u[s2undidx];
 			`ILTypeReg, `ILTypeMem: s2src <= r[s1src];
 		endcase
-		if (s1op == `OPex && s1typ != `ILTypeMem) begin
-			errors <= errors | `SIGILL;
-			s2op  <= `OPnop;
-		end
+		
 		s2dst <= r[s1dst];
 		s2dstreg <= s1dst;
 		// Push onto undo stack if this is a push instruction
@@ -340,7 +344,7 @@ always @(posedge clk) begin
 						halt <= 1; $display($time, ": 5: FAILED-HALT");
 					end else begin
 						halt <= 0; 
-						s0pc <= s0pc - 1;
+						s0pc <= s0pc - 2;
 						errors <= s3src & check; $display($time, ": 5: FAILED-REVERSE");
 					end
 				end	
