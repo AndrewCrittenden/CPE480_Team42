@@ -333,16 +333,19 @@ always @(posedge clk) begin
 					errors <= 0;
 				end
 			end
-			`OPfail: begin 
+		
+			`OPfail: begin //if (s3op == `OPfail && s3fwd && ((s3src & ~check) == 0)) errors <= s3src & check
 				if(s3fwd) begin
 					if((s3src & ~check) != 0) begin
 						halt <= 1; $display($time, ": 5: FAILED-HALT");
 					end else begin
 						halt <= 0; 
+						s0pc <= s0pc - 1;
 						errors <= s3src & check; $display($time, ": 5: FAILED-REVERSE");
 					end
 				end	
 			end
+		
 		endcase
 		if (opWritesToDst(s4op)) begin
 				r[s4dstreg] <= s4alu;
