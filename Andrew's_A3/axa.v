@@ -133,13 +133,14 @@ reg s3fwd;
 reg s4fwd;
 
 // Stage 0: Update PC
-assign s0blocked = (opIsBranch(s1op) || opIsBranch(s2op));
+assign s0blocked = (opIsBranch(s1op) || opIsBranch(s2op) || s1op == `OPjerr || s2op == `OPjerr);
 assign s0waiting = s1blocked || s1waiting;
 assign s0shouldjmp =
 	   (s2op == `OPbz && s2dst == 0)
 	|| (s2op == `OPbnz && s2dst != 0)
 	|| (s2op == `OPbn && s2dst[15] == 1)
 	|| (s2op == `OPbnn && s2dst[15] == 0);
+assign s0jerrjmp = (s2op == `OPjerr && errors == 0 && s2fwd == 0); //Jump when jerr was running in reverse and there are no longer any errors
 assign s0jmptarget = (s2typ == `ILTypeImm) ? (s0pc + s2src - 1) : s2src;
 
 always @(posedge clk) begin
@@ -149,7 +150,7 @@ always @(posedge clk) begin
 		$readmemh0(r);
 		$readmemh1(im);
 		$readmemh2(dm);
-	end else begin 
+	end else begin
 		if (errors == 0) begin
 			s0fwd <= 1;
 		end else begin
@@ -160,9 +161,12 @@ always @(posedge clk) begin
 			// -1 because stage 0 blocks one instruction after the branch
 			s0lastpc <= s0pc - 1;
 			s0pc <= s0jmptarget;
+		end else if(s0jerrjmp) begin
+			s0lastpc <= s0pc + 1;
+			s0pc <= s2dst;
 		end else if (!s0blocked && !s0waiting) begin
 			s0lastpc <= s0pc;
-			 s0pc <= s0pc + ((errors == 0) ? 1 : -1); //Increment or Decrement based on errors
+			s0pc <= s0pc + ((errors == 0) ? 1 : -1); //Increment or Decrement based on errors
 		end
 	end
 	#1 $display($time, ": 0: s0pc: %d, should jump: %b, lastpc: %d", s0pc, s0shouldjmp, s0lastpc);
@@ -184,6 +188,14 @@ always @(posedge clk) begin
 		s1ir <= im[s0pc];
 		s1lastpc <= s0lastpc;
 	end
+	if (s1op == `OPjerr) begin
+			if(s0fwd) begin 
+				check <= check | s1src; $display($time, ": 5: JERR-FWD");
+			end else begin
+				check <= check & ~s2src; 
+				errors <= errors & ~s1src; $display($time, ": 5: JERR-REVERSE");
+			end
+		end
 	#2 $display($time, ": 1: ir: %x, op: %s, typ: %b, src: %x, dst: %x, lastpc: %d", s1ir, opStr(s1op), s1typ, s1src, s1dst, s1lastpc);
 end
 
@@ -314,23 +326,6 @@ always @(posedge clk) begin
 			`OPdup: begin if(s3fwd) begin s4alu <= s3src; end else `DREST end
 
 			`OPsys: begin halt <= 1; $display($time, ": 5: halting"); end
-			`OPjerr: begin 
-				if(s3fwd) begin 
-					check <= check | s3src; $display($time, ": 5: JERR-FWD");
-				end else begin
-					check <= check & ~s3src; 
-					errors <= errors & ~s3src; $display($time, ": 5: JERR-REVERSE");
-					if (errors == 0) begin
-						//Flush the Pipe with NOPs
-						s1ir <= `NOP;
-						s2op  <= `OPnop;
-						s3op <= `OPnop;
-						s4op  <= `OPnop;
-						//Set Pc to address in register $d
-						s0pc <= s3dst;
-					end
-				end
-			end
 			`OPcom: begin
 				if(s3fwd) begin
 					check <= 0;
@@ -346,9 +341,7 @@ always @(posedge clk) begin
 						halt <= 0; 
 						errors <= s3src & check; $display($time, ": 5: FAILED-REVERSE");
 					end
-				end else begin
-					//NOP do nothing in reverse execution
-				end		
+				end	
 			end
 		endcase
 		if (opWritesToDst(s4op)) begin
@@ -359,33 +352,6 @@ always @(posedge clk) begin
 	#5 $display($time, ": 4:           op: %s,          alu: %x,            dstreg: %d", opStr(s4op), s4alu, s4dstreg);
 	#9 $display(""); // Spacer
 end
-
-/*
-// Stage 5: Write registers
-// This stage also owns "halt"
-always @(posedge clk) begin
-	if (reset) begin
-		halt <= 0;
-		$display($time, ": 5: reset");
-	end 
-	case (s4op)
-		`OPsys: begin halt <= 1; $display($time, ": 5: halting"); end
-		`OPfail: begin 
-			halt <= s4halt;	
-		end
-		`OPjerr: begin
-			//TODO jump to address in $d s4dstreg
-		end
-		default: begin
-			if (opWritesToDst(s4op)) begin
-				r[s4dstreg] <= s4alu;
-				$display($time, ": 5: WRITING ", s4alu, " to reg ", s4dstreg);
-			end
-		end
-	endcase
-	#9 $display(""); // Spacer
-end
-*/
 
 function opHasDst (input `OP op);
 	opHasDst = (op `OP_LEN == 1'b0)
