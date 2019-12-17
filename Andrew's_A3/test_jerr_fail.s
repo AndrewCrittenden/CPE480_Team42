@@ -1,7 +1,3 @@
-; VMEM 0 should have these as the first two entries
-; 0007
-; 000c
-
 com
 bz $7, 2
 sys
@@ -11,7 +7,14 @@ fail 2
 sys
 com
 jerr $1, 1
-sub $1, 1
+jerr $1, 2
+bz $7, 2
+sys
+land
 ex  $1, $0
 dup $0, $5
 fail 8
+
+; VMEM 0 should have these as the first two entries
+; 0007
+; 000f
