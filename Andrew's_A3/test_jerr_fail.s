@@ -14,7 +14,7 @@ land
 ex  $1, $0
 dup $0, $5
 fail 8
-
+sys
 ; VMEM 0 should have these as the first two entries
 ; 0007
-; 000f
+; 000e

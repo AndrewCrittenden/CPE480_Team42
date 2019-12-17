@@ -84,7 +84,7 @@ end
 endmodule
 
 //Restore Register d from the undo buffer
-`define DREST begin s4alu <= u[s2usp]; s2usp <= s2usp - 1; end
+`define DREST begin s4alu <= u[s2usp- 1]; s2usp <= s2usp - 1; end
 
 module processor (halt, reset, clk);
 output reg halt;
@@ -134,7 +134,7 @@ reg s3fwd;
 reg s4fwd;
 
 // Stage 0: Update PC
-assign s0blocked = (opIsBranch(s1op) || opIsBranch(s2op) || s1op == `OPjerr || s2op == `OPjerr); // || s1op ==`OPex || s2op ==`OPex);
+assign s0blocked = (opIsBranch(s1op) || opIsBranch(s2op) || s1op == `OPjerr || s2op == `OPjerr || s1op == `OPland || s2op == `OPland); // || s1op ==`OPex || s2op ==`OPex);
 assign s0waiting = s1blocked || s1waiting;
 assign s0shouldjmp =
 	   (s2op == `OPbz && s2dst == 0)
@@ -143,6 +143,7 @@ assign s0shouldjmp =
 	|| (s2op == `OPbnn && s2dst[15] == 0);
 assign s0jerrjmp = (s2op == `OPjerr && errors == 0 && s2fwd == 0); //Jump when jerr was running in reverse and there are no longer any errors
 assign s0jmptarget = (s2typ == `ILTypeImm) ? (s0pc + s2src - 1) : s2src;
+assign s0landjump = (s2fwd == 0 && s2op == `OPland);
 
 always @(posedge clk) begin
 	if (reset) begin
@@ -165,6 +166,11 @@ always @(posedge clk) begin
 		end else if(s0jerrjmp) begin
 			s0lastpc <= s0pc + 1;
 			s0pc <= s2dst;
+		end else if(s0landjump) begin
+			$display($time, ": 0: UNDO STACK JUMP TARGET FOR LAND: %d", u[s2usp-1] -1);
+			s0lastpc <= s0pc + 1;
+			s0pc <= u[s2usp-1] -1; 
+			s2usp <= s2usp - 1;
 		end else if (!s0blocked && !s0waiting) begin
 			s0lastpc <= s0pc;
 			s0pc <= s0pc + ((errors == 0) ? 1 : -1); //Increment or Decrement based on errors
