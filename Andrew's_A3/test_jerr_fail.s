@@ -1,3 +1,7 @@
+; VMEM 0 should have these as the first two entries
+; 0007
+; 000c
+
 com
 bz $7, 2
 sys

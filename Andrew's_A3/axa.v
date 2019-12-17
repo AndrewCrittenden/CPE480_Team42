@@ -114,6 +114,7 @@ reg `UPTR  s2usp;
 wire `UPTR  s2undidx;
 
 reg `OP    s3op;
+reg `TYPE  s3typ;
 reg `WORD  s3src;
 reg `WORD  s3dst;
 reg `REG   s3dstreg;
@@ -133,7 +134,7 @@ reg s3fwd;
 reg s4fwd;
 
 // Stage 0: Update PC
-assign s0blocked = (opIsBranch(s1op) || opIsBranch(s2op) || s1op == `OPjerr || s2op == `OPjerr || s1op ==`OPex);
+assign s0blocked = (opIsBranch(s1op) || opIsBranch(s2op) || s1op == `OPjerr || s2op == `OPjerr); // || s1op ==`OPex || s2op ==`OPex);
 assign s0waiting = s1blocked || s1waiting;
 assign s0shouldjmp =
 	   (s2op == `OPbz && s2dst == 0)
@@ -196,13 +197,6 @@ always @(posedge clk) begin
 				errors <= errors & ~s1src; $display($time, ": 5: JERR-REVERSE");
 			end
 		end
-
-		if (s1op == `OPex && s1typ != `ILTypeMem) begin
-			//s0pc <= s0pc - 2;
-			errors <= errors | `SIGILL;
-			//s2op  <= `OPnop;
-			#3 $display($time, ": Illegal instruction Errors: %d", errors);
-		end
 	#2 $display($time, ": 1: ir: %x, op: %s, typ: %b, src: %x, dst: %x, lastpc: %d", s1ir, opStr(s1op), s1typ, s1src, s1dst, s1lastpc);
 end
 
@@ -243,6 +237,10 @@ always @(posedge clk) begin
 			s2usp <= 0;
 	end else if (!s2waiting) begin
 		s2fwd <= s1fwd;
+		if (s1op == `OPex && s1typ != `ILTypeMem) begin
+			s0pc <= s0pc - 2;
+			errors <= errors | `SIGILL; $display($time, ": Illegal instruction Errors: %d", errors);
+		end
 		s2op  <= s1op;
 		s2typ <= s1typ;
 		// Not all instructions have a valid src or dst to read, but
@@ -253,7 +251,6 @@ always @(posedge clk) begin
 			`ILTypeUnd: s2src <= u[s2undidx];
 			`ILTypeReg, `ILTypeMem: s2src <= r[s1src];
 		endcase
-		
 		s2dst <= r[s1dst];
 		s2dstreg <= s1dst;
 		// Push onto undo stack if this is a push instruction
@@ -281,6 +278,8 @@ always @(posedge clk) begin
 		s3dst <= 0;
 		s3dstreg <= 0;
 	end else begin
+		$display($time, ": Current Errors: %d", errors);
+		s3typ <= s2typ;
 		s3fwd <= s2fwd;
 		s3op  <= s2op;
 		s3src <= (s2typ == `ILTypeMem) ? dm[s2src] : s2src;
@@ -326,7 +325,10 @@ always @(posedge clk) begin
 			`OPshr: begin if(s3fwd) begin s4alu <= {{16{s3dst[15]}}, s3dst} >> (s3src & 16'h000f); end else `DREST end
 			`OPor:  begin if(s3fwd) begin s4alu <= s3dst | s3src; end else `DREST end
 			`OPand: begin if(s3fwd) begin s4alu <= s3dst & s3src; end else `DREST end
-			`OPex: begin s4alu <= s3src; end
+			`OPex: begin if (s3typ == `ILTypeMem) begin
+				s4alu <= s3src;
+				end
+			 end
 			`OPdup: begin if(s3fwd) begin s4alu <= s3src; end else `DREST end
 
 			`OPsys: begin halt <= 1; $display($time, ": 5: halting"); end
@@ -390,7 +392,7 @@ endfunction
 // harmful in simulation, but nice) and also prevents memory writes from
 // instructions immediately following the sys or halt.
 function opIsBlocking (input `OP op);
-	opIsBlocking = (op == `OPsys || op == `OPfail);
+	opIsBlocking = (op == `OPsys || op == `OPfail || op == `OPex);
 endfunction
 
 // Just for the debug prints because I'm tired of reading hex
