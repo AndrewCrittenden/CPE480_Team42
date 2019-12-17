@@ -1,4 +1,4 @@
-.IS $.rd,.i := 0:2 .this:2 (.i>>4):4 .rd:4 .i:4
+ .IS $.rd,.i := 0:2 .this:2 (.i>>4):4 .rd:4 .i:4
 .alias .IS xhi lhi xlo llo
 
 .IL $.rd,$.rs  := 2:2 .this:4 1:2 .rd:4 .rs:4
@@ -12,6 +12,9 @@
 jerr $.rd,.i :=  0b11000000:8 .rd:4 .i:4
 fail .i      :=  0b11000100:8 0:4   .i:4
 ex $.rd,@$.rs := 0b11001010:8 .rd:4 .rs:4
+ex $.rd,.i := 0b11001000:8 .rd:4 .rs:4
+ex $.rd,.i$ := 0b11001011:8 .rd:4 .rs:4
+ex $.rd,$.rs := 0b11001001:8 .rd:4 .rs:4
 .IN := 0b110:3 .this:3 0:10
 .alias .IN 3 com land
 sys := 0b1110000000000000:16
